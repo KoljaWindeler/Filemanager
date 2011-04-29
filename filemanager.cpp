@@ -13,7 +13,6 @@ using namespace std;
 #include <QDebug>
 #include <QVBoxLayout>
 
-
 #include "filemanager.h"
 #include "ui_filemanager.h"
 #include "stdio.h"
