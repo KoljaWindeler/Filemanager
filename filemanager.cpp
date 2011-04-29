@@ -280,7 +280,7 @@ bool MainWindow::upload(QStringList local_filenames,QStringList remote_filenames
     for(int i=0;i<local_filenames.count();i++){
         int j=0;
         if(i>0) j=i+1;
-        setText(ui->debug,j,local_filenames.at(i)+" <- "+remote_filenames.at(i),false);
+        setText(ui->debug,j,local_filenames.at(i)+" -> "+remote_filenames.at(i),false);
     }
     // variablen die über alle schleifeninterationen gültig sind
     bool status_good=true;
@@ -1694,8 +1694,8 @@ void MainWindow::show_animation_box(){
 
 void MainWindow::start_animation(){
     if(m_serial_handle!=-1){
-        QString commando="s";
-        commando.append(ui->ani_filename->text()+","+ui->ani_start->text()+","+ui->ani_ende->text()+","+ui->ani_delay->text()+"!");
+        QString commando="a";
+        commando.append(ui->ani_filename->text()+","+ui->ani_start->text()+","+ui->ani_ende->text()+","+ui->ani_delay->text()+";");
         tcflush(m_serial_handle, TCIFLUSH); // flush pending data
         write(m_serial_handle,commando.toAscii().data(),commando.length());
         ui->status->append("Animation command \""+commando+"\" send");
