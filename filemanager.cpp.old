@@ -1,0 +1,518 @@
+#include <QFileSystemModel>
+#include <QTreeView>
+#include <QTextEdit>
+#include <QStandardItemModel>
+#include <QSplitter>
+#include <QDirModel>
+#include <QDebug>
+#include <QVBoxLayout>
+
+#include "filemanager.h"
+#include "ui_filemanager.h"
+#include "stdio.h"
+
+#define BAUDRATE B57600 /* baudrate settings are defined in <asm/termbits.h>, which is included by <termios.h> */
+#define MODEMDEVICE "/dev/ttyUSB0" /*"/dev/ttyUSB0" change this definition for the correct port */
+#define _POSIX_SOURCE 1 /* POSIX compliant source */
+using namespace std;
+#define BUF 255
+
+//////SERIAL
+#include <sstream>
+#include <iostream>
+#include <fstream>
+#include <vector>
+#include <string>
+#include <string.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <math.h>
+#include <sys/types.h>
+#include <termios.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <time.h>
+
+int openSerialDevice(const char* devTTY) {
+    int fileDescriptor;
+    fileDescriptor = open(devTTY, O_RDWR | O_NOCTTY);
+    if (fileDescriptor == -1) {
+        perror("Fehler beim Herstellen der Verbindung.\nFehlermeldung: ");
+        return -1;
+    }
+    // set new parameters to the serial device
+    struct termios newtio;
+    fcntl(fileDescriptor, F_SETFL, 0);
+    // set everything to 0
+    bzero(&newtio, sizeof(newtio));
+    // again set everything to 0
+    bzero(&newtio, sizeof(newtio));
+    newtio.c_cflag |= BAUDRATE; // Set Baudrate first time
+    newtio.c_cflag |= CLOCAL; // Local line - do not change "owner" of port
+    newtio.c_cflag |= CREAD; // Enable receiver
+    newtio.c_cflag &= ~ECHO; // Disable echoing of input characters
+    newtio.c_cflag &= ~ECHOE;
+    // set to 8N1
+    newtio.c_cflag &= ~PARENB; // no parentybyte
+    newtio.c_cflag &= ~CSTOPB; // 1 stop bit
+    newtio.c_cflag &= ~CSIZE; // Mask the character size bits
+    newtio.c_cflag |= CS8; // 8 data bits
+    // output mode to
+    newtio.c_oflag = 0;
+    //newtio.c_oflag |= OPOST;
+    // Set teh baudrate for sure
+    cfsetispeed(&newtio, BAUDRATE);
+    cfsetospeed(&newtio, BAUDRATE);
+    newtio.c_cc[VTIME] = 10; /* inter-character timer  */
+    newtio.c_cc[VMIN] = 0; /* blocking read until  */
+    usleep(2000000);
+    tcflush(fileDescriptor, TCIFLUSH); // flush pending data
+    // set the new defined settings
+    if (tcsetattr(fileDescriptor, TCSANOW, &newtio)) {
+        perror("could not set the serial settings!");
+        return -1;
+    }
+    return fileDescriptor;
+}
+
+int strpos(const string &haystack, const string &needle)
+{
+    int sleng = haystack.length();
+    int nleng = needle.length();
+
+    if (sleng==0 || nleng==0)
+        return -1;
+
+    for(int i=0, j=0; i<sleng; j=0, i++ )
+    {
+        while (i+j<sleng && j<nleng && haystack[i+j]==needle[j])
+            j++;
+        if (j==nleng)
+            return i;
+    }
+    return -1;
+}
+////////SERIAL
+
+
+MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWindow)
+{
+    ui->setupUi(this);
+    m_serial_handle=-1;
+
+    QFileSystemModel *model = new QFileSystemModel();
+
+    const QModelIndex rootIdx = model->setRootPath(QLatin1String("/home/kolja/Desktop"));
+    ui->local->setModel(model);
+    ui->local->header()->setClickable(true);
+    ui->local->header()->setStretchLastSection(true);
+    ui->local->header()->setSortIndicator(0,Qt::AscendingOrder);
+    ui->local->header()->setSortIndicatorShown(true);
+    ui->local->setRootIndex( rootIdx );
+
+    ui->local->setModel(model);
+    ui->local->header()->resizeSection(0,160);
+    ui->local->header()->resizeSection(1,79);
+    ui->local->header()->resizeSection(2,60);
+    ui->local->header()->resizeSection(3,120);
+
+    connect(ui->file_up,SIGNAL(clicked()),this,SLOT(upload()));
+    connect(ui->file_down,SIGNAL(clicked()),this,SLOT(download()));
+    connect(ui->connect_btn,SIGNAL(clicked()),this,SLOT(connection_fs()));
+    connect(ui->refresh_btn,SIGNAL(clicked()),this,SLOT(ls()));
+    connect(ui->delete_btn,SIGNAL(clicked()),this,SLOT(delete_file()));
+    connect(ui->newdir_btn,SIGNAL(clicked()),this,SLOT(mkdir()));
+}
+
+MainWindow::~MainWindow()
+{
+    delete ui;
+} 
+
+void MainWindow::upload(){
+    QString filename = ui->local->currentIndex().sibling(ui->local->currentIndex().row(),0).data().toString();
+    filename.replace(QString(" "),QString(""));
+
+    if(m_serial_handle!=-1){
+        // convert to 8.3
+        QStringList tmp=filename.split(".");
+        filename.clear();
+        if(tmp.count()==2){
+            QString tmp2 = tmp.at(0);
+            if(tmp2.length()>8)
+                ui->status->append("Warning! Filename cutted");
+            filename.append(tmp2.left(8));
+            tmp2=tmp.at(1);
+            filename.append(".");
+            filename.append(tmp2.left(3));
+        } else if(tmp.count()==1){
+            QString tmp2 = tmp.at(0);
+            if(tmp2.length()>8)
+                ui->status->append("Warning! Filename cutted");
+            filename.append(tmp2.left(8));
+        } else {
+            QString tmp2 = tmp.at(0);
+            if(tmp2.length()>8)
+                ui->status->append("Warning! Filename cutted");
+            filename.append(tmp2.left(8));
+            tmp2=tmp.at(tmp.count()-1);
+            filename.append(".");
+            filename.append(tmp2.left(3));
+        };
+        // convert to 8.3
+
+        QString statusreport;
+        statusreport.append("Uploading file \"");
+        statusreport.append(filename);
+        statusreport.append("\"");
+        ui->status->append(statusreport);
+
+        QString commando;
+        commando="w";
+        commando.append(filename);
+        commando.append('\n');
+        cout << "Sende:" << commando.toAscii().data() << endl;
+        write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+        commando="asdf";
+        cout << "Sende:" << commando.toAscii().data() << endl;
+        write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+        tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+        commando="***";
+        cout << "Sende:" << commando.toAscii().data() << endl;
+        write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+        cout << "command gesendet" << endl;
+        char buffer[5];
+        memset(buffer, 0, 5);
+        read(m_serial_handle, buffer, 4);
+        cout << "return \"" << buffer << "\"" << endl;
+        if(strncmp(buffer,"Done", 4)==0){
+            ui->status->append("File upload successful");
+        } else {
+            cout << "bin im else" << buffer[0] << endl;
+            ui->status->append("strcmp war nicht 0");
+        }
+
+    } else {
+        QString statusreport;
+        statusreport.append("Uploading file \"");
+        statusreport.append(filename);
+        statusreport.append("\" failed!");
+        ui->status->append(statusreport);
+        ui->status->append("No Connection to Speedoino.");
+    }
+    ls();
+};
+
+void MainWindow::download(){
+    QString filename = ui->remote->currentIndex().sibling(ui->remote->currentIndex().row(),0).data().toString();
+    QString commando;
+    QString status;
+    status="";
+    status.append("Downloading file \"");
+    status.append(filename);
+    status.append("\"");
+    ui->status->append(status);
+
+    commando="r";
+    commando.append(filename);
+    cout << "Sende:" << commando.toAscii().data() << endl;
+    tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+    write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+    cout << "command gesendet" << endl;
+
+    bool breaker=false;
+    QString file_content;
+    char buffer[2];
+    file_content.clear();
+    time_t time_entry=time(0); // aktuelle Zeit speichern
+    int stopper=0;
+    while(!breaker){
+        if(time(0)-time_entry>2) { // 3sek nichts gehört
+            breaker=true;
+        };
+        if(read(m_serial_handle, buffer, 1)>0){
+            if(buffer[0]!='*'){
+                while(stopper>0){
+                    file_content.append("*");
+                    stopper--;
+                }
+                file_content.append(buffer[0]);
+            } else {
+                stopper++;
+            };
+            if(stopper==3){
+                breaker=true;
+                read(m_serial_handle, buffer, 2); // den umbruch weglesen
+            };
+        }
+    }
+    if(file_content.length()>0){
+        QString local_filename;
+        local_filename="/home/kolja/Desktop/";
+        local_filename.append(filename);
+        QFile file(local_filename);
+        file.open(QIODevice::ReadWrite | QIODevice::Text);
+        file.write(file_content.toAscii().data());
+        file.close();
+    };
+    cout << file_content.toAscii().data() << endl;
+    char done_buffer[5];
+    memset(done_buffer, 0, 5);
+    read(m_serial_handle, done_buffer, 4);
+    cout << "return \"" << done_buffer << "\"" << endl;
+    if(strncmp(done_buffer,"Done", 4)==0){
+        ui->status->append("Download completed");
+        this->ls();
+    } else {
+        cout << "bin im else" << done_buffer[0] << endl;
+        ui->status->append("strcmp war nicht 0");
+    };
+}
+
+void MainWindow::connect_fs(){    
+    ui->status->append("Connecting ... ");
+    this->repaint();
+    //struct termios oldtio;
+    this->m_serial_handle=openSerialDevice(MODEMDEVICE);
+    if(this->m_serial_handle!=-1){
+        // vars, buffer, ack def
+        char buffer[1];
+        char start[]="file_manager activated";
+        unsigned int empfangen=0;
+        bool breaker=false;
+        unsigned int right=0;
+        //write(m_serial_handle,"z",1); //senden zum deaktiviere des eventuell noch offenen f_m
+        write(m_serial_handle,"f_m",3); //senden zum aktiviere des f_m
+        time_t time_entry=time(0); // aktuelle Zeit speichern
+        // Zeichen empfangen
+        while(empfangen<strlen(start) && !breaker){ // maximal so lange suchen wie der teststring lang ist
+            if(time(0)-time_entry>2) { // 3sek nichts gehört
+                empfangen=999;
+            };
+            //cout << "warte" << endl;
+            if(read(m_serial_handle, buffer, 1)>0){
+                if(buffer[0]==start[right]){
+                    right++;
+                    if(right==strlen(start)){
+                        breaker=true;
+                    };
+                } else {
+                    right=0;
+                }
+                // debug
+                cout << buffer[0];
+                // debug
+                empfangen++;
+                time_entry=time(0); // reset waiting intervall
+            }
+        }
+        cout << endl;
+        // anzahl richtiger zeichen testen
+        if(breaker){
+            ui->status->append("Connection established");
+            ui->connect_btn->setText("disconnect");
+        } else if(empfangen==999){
+            ui->status->append("Timeout");
+            ui->status->append("disconnected");
+            ui->connect_btn->setText("connect");
+            this->m_serial_handle=-1;
+        } else if(empfangen!=0){
+            ui->status->append("Wrong data received");
+            ui->status->append("disconnected");
+            ui->connect_btn->setText("connect");
+            this->m_serial_handle=-1;
+        } else {
+            ui->status->append("Serial Port ok, but Connection failed.");
+            ui->status->append("disconnected");
+            ui->connect_btn->setText("connect");
+            this->m_serial_handle=-1;
+        }
+    }else{
+        ui->status->append("Connection failed.");
+    }
+};
+
+void MainWindow::disconnect_fs(){
+    struct termios oldtio;
+    write(this->m_serial_handle,"*",1);
+    tcsetattr(this->m_serial_handle,TCSANOW,&oldtio);
+    ui->status->append("disconnected");
+    ui->connect_btn->setText("connect");
+    this->m_serial_handle=-1;
+
+}
+
+void MainWindow::connection_fs(){
+    if(this->m_serial_handle!=-1){
+        disconnect_fs();
+    }else{
+        connect_fs();
+        this->repaint();
+        if(this->m_serial_handle!=-1){
+            ls();
+        } else {
+            ui->status->append("retrying");
+            this->repaint();
+            connect_fs();
+            this->repaint();
+            if(this->m_serial_handle!=-1){
+                ls();
+            };
+        };
+    };
+}
+
+void MainWindow::delete_file(){
+    QString filename = ui->remote->currentIndex().sibling(ui->remote->currentIndex().row(),0).data().toString();
+    QString commando;
+    QString status;
+    status="";
+    status.append("Deleting file \"");
+    status.append(filename);
+    status.append("\"");
+    ui->status->append(status);
+
+    commando="";
+    commando.append("e");
+    commando.append(filename);
+    cout << "Sende:" << commando.toAscii().data() << endl;
+    write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+    tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+    cout << "command gesendet" << endl;
+    char buffer[5];
+    memset(buffer, 0, 5);
+    usleep(1000000);
+    read(m_serial_handle, buffer, 4);
+    cout << "return \"" << buffer << "\"" << endl;
+    if(strncmp(buffer,"Done", 4)==0){
+        ui->status->append("File delete successful");
+        this->ls();
+    } else {
+        cout << "bin im else" << buffer[0] << endl;
+        ui->status->append("strcmp war nicht 0");
+    }
+}
+
+void MainWindow::mkdir(){
+    QString dirname=ui->textEdit->toPlainText();
+    QString commando;
+    commando="m";
+    commando.append(dirname);
+    commando.append('\n');
+    cout << "Sende:" << commando.toAscii().data() << endl;
+    write(m_serial_handle,commando.toAscii().data(),commando.length()); //senden zum deaktiviere des eventuell noch offenen f_m
+    tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+    cout << "command gesendet" << endl;
+    char buffer[5];
+    memset(buffer, 0, 5);
+    read(m_serial_handle, buffer, 4);
+    cout << "return \"" << buffer << "\"" << endl;
+    if(strncmp(buffer,"Done", 4)==0){
+        ui->status->append("Make directory successful");
+        this->ls();
+    } else {
+        cout << "bin im else" << buffer[0] << endl;
+        ui->status->append("strcmp war nicht 0");
+    }
+}
+
+QStandardItem MainWindow::ls_dir(QString dir, QStandardItem *tree){
+    if(cd(dir.toAscii().data())){
+        tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+        QString ls_result="";
+        char buffer[2];
+        char done[]="Done";
+
+        int empfangen=0;
+        bool breaker=false;
+        unsigned int right=0;
+
+        //senden zum listen
+        write(m_serial_handle,"l",1);
+        time_t time_entry=time(0); // aktuelle Zeit speichern
+
+        // empfangen
+        while(empfangen<99999 && !breaker){ // maximal so lange suchen wie der teststring lang ist
+            if(time(0)-time_entry>2) { // 3sek nichts gehört
+                empfangen=99999;
+            };
+            if(read(m_serial_handle, buffer, 1)>0){
+                ls_result.append(buffer[0]);
+                //cout << buffer[0] << endl;
+                if(buffer[0]==done[right]){
+                    //cout << " richtig! das ist nr " << right << endl;
+                    right++;
+                    if(right==strlen(done)){
+                        //cout << "aus!" << endl;
+                        breaker=true;
+                    };
+                } else {
+                    right=0;
+                }
+            };
+        };
+        cout << "Daten vollständig empfangen" << endl;
+
+        // interpretieren
+        if(breaker){
+            //////////////
+            QString ls_dir_entries[999];
+            QString ls_file_entries[999];
+            QString temp;
+            int ls_dir_counter=0;
+            int ls_file_counter=0;
+            int ls_zeiger=0;
+            bool valid=true;
+            while(ls_zeiger<ls_result.length()){
+                if(ls_result[ls_zeiger]!='/' && ls_result[ls_zeiger]!=' ' && ls_result[ls_zeiger]!='\n'){
+                    temp.append(ls_result[ls_zeiger]);
+                } else if(ls_result[ls_zeiger]=='\n') {
+                    temp="";
+                    valid=true;
+                } else if(ls_result[ls_zeiger]=='/'){ // verzeichnissname gefunden
+                    ls_dir_entries[ls_dir_counter]=temp;
+
+                    QStandardItem *child = new QStandardItem(ls_dir(temp,tree));
+                    tree->appendRow(child);
+
+                    ls_dir_counter++;
+                    valid=false;
+                } else if(ls_result[ls_zeiger]==' ' && valid){ // datei gefunden
+                    valid=false;
+                    ls_file_entries[ls_file_counter]=temp;
+                    ls_file_counter++;
+                    QStandardItem *child = new QStandardItem(temp);
+                    item->appendRow(child);
+                }
+                ls_zeiger++;
+            };
+        }
+        return item;
+    }
+
+void MainWindow::ls(){
+    //cout << "ls gestartet ";
+    tcflush(m_serial_handle, TCIFLUSH); // flush pending data
+   /*
+            model->setItem(r, item);
+        }
+
+        model->setHorizontalHeaderItem( 0, new QStandardItem( "Name" ) );
+        ui->remote->setModel( model );
+
+    }
+    //////////////
+*/
+    QStandardItem *item = new QStandardItem();
+    QStandardItem *child = ls("..",item);
+    item->appendRow(child);
+    model->setItem(item);
+    model->setHorizontalHeaderItem( 0, new QStandardItem( "Name" ) );
+    ui->remote->setModel( model );
+}
+
+
+bool MainWindow::cd(QString dir){
+    return true;
+}
