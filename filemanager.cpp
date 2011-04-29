@@ -1,3 +1,4 @@
+# das sollte zu sehen sein
 #define dbug false
 #define BAUDRATE B57600 /* baudrate settings are defined in <asm/termbits.h>, which is included by <termios.h> */
 #define CONNECT_TIME 0000000
