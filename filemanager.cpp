@@ -88,6 +88,7 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent), ui(new Ui::MainWi
     connect(ui->pilotbutton,SIGNAL(clicked()),this,SLOT(send_pilot()));
     connect(ui->ani_show,SIGNAL(clicked()),this,SLOT(start_animation()));
     connect(ui->Animation_button,SIGNAL(clicked()),this,SLOT(show_animation_box()));
+
 }
 
 MainWindow::~MainWindow(){
